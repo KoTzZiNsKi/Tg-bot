@@ -1,118 +1,149 @@
 import os
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, ConversationHandler
-from telegram.ext import CallbackContext
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    ConversationHandler,
+    ContextTypes,
+    filters,
+)
 
-# Список вопросов и правильных ответов
 QUESTIONS = [
-    {"question": "Сколько будет 2 + 2?", "answer": "4"},
-    {"question": "Столица Франции?", "answer": "Париж"},
-    {"question": "Какой цвет у небес?", "answer": "голубой"},
+    {
+        "question": "Сколько будет 2 + 2?",
+        "options": ["3", "4", "5"],
+        "answer": "4"
+    },
+    {
+        "question": "Столица Франции?",
+        "options": ["Берлин", "Париж", "Мадрид"],
+        "answer": "Париж"
+    }
 ]
 
-# Переменная для подсчета баллов
 score = 0
+QUESTION = 0
 
-# Состояния для разговора
-QUESTION, END = range(2)
 
-def start(update: Update, context: CallbackContext) -> int:
-    """Запуск бота и привествие"""
-    update.message.reply_text('Привет! Напиши /test для начала теста.')
-    return ConversationHandler.END
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Привет! Напиши /test чтобы начать тест.")
 
-def test(update: Update, context: CallbackContext) -> int:
-    """Запуск теста"""
+
+async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global score
-    score = 0  # Сбросить баллы при начале нового теста
-    update.message.reply_text(QUESTIONS[0]["question"])
+    score = 0
+    context.user_data["questions"] = QUESTIONS.copy()
+    context.user_data["current_index"] = 0
+    context.user_data["question_count"] = len(QUESTIONS)
+    await send_next_question(update, context)
     return QUESTION
 
-def handle_answer(update: Update, context: CallbackContext) -> int:
-    """Обработка ответа"""
-    global score
-    user_answer = update.message.text.lower()
-    correct_answer = QUESTIONS[0]["answer"].lower()
 
-    if user_answer == correct_answer:
-        score += 1  # Увеличиваем баллы за правильный ответ
-
-    # Удаляем вопрос, на который ответили
-    QUESTIONS.pop(0)
-
-    if len(QUESTIONS) > 0:
-        # Если остались вопросы, задаём следующий
-        update.message.reply_text(QUESTIONS[0]["question"])
-        return QUESTION
+async def send_next_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    index = context.user_data["current_index"]
+    if index < len(context.user_data["questions"]):
+        q = context.user_data["questions"][index]
+        reply_markup = ReplyKeyboardMarkup(
+            [[opt] for opt in q["options"]], one_time_keyboard=True, resize_keyboard=True
+        )
+        await update.message.reply_text(q["question"], reply_markup=reply_markup)
     else:
-        # Если вопросов больше нет, показываем результаты
-        update.message.reply_text(f"Тест завершен! Ваши баллы: {score}")
-        return END
+        total = context.user_data["question_count"]
+        points = round((score / total) * 10, 1)
+        await update.message.reply_text(
+            f"Тест завершён! Вы набрали {points} из 10 баллов.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        return ConversationHandler.END
 
-def cancel(update: Update, context: CallbackContext) -> int:
-    """Завершение теста"""
-    update.message.reply_text("Тест завершен.")
+
+async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global score
+    index = context.user_data["current_index"]
+    user_answer = update.message.text
+    correct = context.user_data["questions"][index]["answer"]
+
+    if user_answer == correct:
+        score += 1
+
+    context.user_data["current_index"] += 1
+    return await send_next_question(update, context)
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Тест отменён.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
-def add_question(update: Update, context: CallbackContext) -> None:
-    """Добавление нового вопроса"""
-    if len(context.args) < 2:
-        update.message.reply_text('Использование: /add_question <вопрос> <ответ>')
+
+async def add_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = " ".join(context.args)
+    parts = text.split("|")
+
+    if len(parts) != 5:
+        await update.message.reply_text("Неверный формат.\nИспользуй: /add_question Вопрос | Вариант1 | Вариант2 | Вариант3 | Правильный")
         return
 
-    question = " ".join(context.args[:-1])
-    answer = context.args[-1]
+    question = parts[0].strip()
+    options = [parts[1].strip(), parts[2].strip(), parts[3].strip()]
+    correct = parts[4].strip()
 
-    QUESTIONS.append({"question": question, "answer": answer})
-    update.message.reply_text(f"Вопрос добавлен: {question} - {answer}")
+    if correct not in options:
+        await update.message.reply_text("Правильный ответ должен быть одним из предложенных вариантов.")
+        return
 
-def show_questions(update: Update, context: CallbackContext) -> None:
-    """Показ текущих вопросов"""
+    QUESTIONS.append({
+        "question": question,
+        "options": options,
+        "answer": correct
+    })
+
+    await update.message.reply_text(f"Вопрос добавлен:\n{question}\nВарианты: {', '.join(options)}\nПравильный: {correct}")
+
+
+async def show_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not QUESTIONS:
-        update.message.reply_text('Вопросы ещё не добавлены.')
+        await update.message.reply_text("Список вопросов пуст.")
     else:
-        question_list = "\n".join([f"{i+1}. {q['question']} - {q['answer']}" for i, q in enumerate(QUESTIONS)])
-        update.message.reply_text(f"Текущие вопросы:\n{question_list}")
+        msg = ""
+        for i, q in enumerate(QUESTIONS, 1):
+            msg += f"{i}. {q['question']} — Ответ: {q['answer']}\n"
+        await update.message.reply_text(msg)
 
-def delete_question(update: Update, context: CallbackContext) -> None:
-    """Удаление вопроса"""
-    if len(context.args) != 1:
-        update.message.reply_text('Использование: /delete_question <номер вопроса>')
+
+async def delete_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) != 1 or not context.args[0].isdigit():
+        await update.message.reply_text("Используй: /delete_question <номер>")
         return
 
-    try:
-        question_index = int(context.args[0]) - 1  # Переводим на индексацию с 0
-        if 0 <= question_index < len(QUESTIONS):
-            deleted_question = QUESTIONS.pop(question_index)
-            update.message.reply_text(f"Вопрос удалён: {deleted_question['question']}")
-        else:
-            update.message.reply_text(f"Нет вопроса с номером {context.args[0]}.")
-    except ValueError:
-        update.message.reply_text('Неверный формат! Использование: /delete_question <номер вопроса>')
+    index = int(context.args[0]) - 1
+    if 0 <= index < len(QUESTIONS):
+        removed = QUESTIONS.pop(index)
+        await update.message.reply_text(f"Удалён вопрос: {removed['question']}")
+    else:
+        await update.message.reply_text("Неверный номер вопроса.")
 
-def main():
-    """Основная настройка бота"""
-    updater = Updater(os.getenv("TOKEN"), use_context=True)
-    dp = updater.dispatcher
 
-    # Настройка команд
-    conversation_handler = ConversationHandler(
-        entry_points=[CommandHandler('test', test)],
+async def main():
+    app = ApplicationBuilder().token(os.getenv("TOKEN")).build()
+
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("test", test)],
         states={
-            QUESTION: [MessageHandler(Filters.text & ~Filters.command, handle_answer)],
-            END: [CommandHandler('start', start)],
+            QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer)],
         },
-        fallbacks=[CommandHandler('cancel', cancel)],
+        fallbacks=[CommandHandler("cancel", cancel)],
     )
 
-    dp.add_handler(conversation_handler)
-    dp.add_handler(CommandHandler('add_question', add_question))
-    dp.add_handler(CommandHandler('show_questions', show_questions))
-    dp.add_handler(CommandHandler('delete_question', delete_question))
+    app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("add_question", add_question))
+    app.add_handler(CommandHandler("show_questions", show_questions))
+    app.add_handler(CommandHandler("delete_question", delete_question))
 
-    # Начать получение обновлений
-    updater.start_polling()
-    updater.idle()
+    await app.run_polling()
 
-if __name__ == '__main__':
-    main()
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.run(main())
