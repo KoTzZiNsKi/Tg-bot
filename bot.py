@@ -9,6 +9,7 @@ from telegram.ext import (
     filters,
 )
 
+# Список вопросов
 QUESTIONS = [
     {
         "question": "Сколько будет 2 + 2?",
@@ -26,10 +27,12 @@ score = 0
 QUESTION = 0
 
 
+# Команда /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Привет! Напиши /test чтобы начать тест.")
 
 
+# Команда /test
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global score
     score = 0
@@ -40,12 +43,15 @@ async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return QUESTION
 
 
+# Отправка следующего вопроса
 async def send_next_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     index = context.user_data["current_index"]
     if index < len(context.user_data["questions"]):
         q = context.user_data["questions"][index]
         reply_markup = ReplyKeyboardMarkup(
-            [[opt] for opt in q["options"]], one_time_keyboard=True, resize_keyboard=True
+            [[opt] for opt in q["options"]],
+            one_time_keyboard=True,
+            resize_keyboard=True
         )
         await update.message.reply_text(q["question"], reply_markup=reply_markup)
     else:
@@ -58,6 +64,7 @@ async def send_next_question(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return ConversationHandler.END
 
 
+# Обработка ответа
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global score
     index = context.user_data["current_index"]
@@ -71,17 +78,21 @@ async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return await send_next_question(update, context)
 
 
+# Отмена теста
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Тест отменён.", reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
 
+# Команда /add_question
 async def add_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = " ".join(context.args)
     parts = text.split("|")
 
     if len(parts) != 5:
-        await update.message.reply_text("Неверный формат.\nИспользуй: /add_question Вопрос | Вариант1 | Вариант2 | Вариант3 | Правильный")
+        await update.message.reply_text(
+            "Неверный формат.\nИспользуй: /add_question Вопрос | Вариант1 | Вариант2 | Вариант3 | Правильный"
+        )
         return
 
     question = parts[0].strip()
@@ -98,9 +109,10 @@ async def add_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "answer": correct
     })
 
-    await update.message.reply_text(f"Вопрос добавлен:\n{question}\nВарианты: {', '.join(options)}\nПравильный: {correct}")
+    await update.message.reply_text(f"✅ Вопрос добавлен:\n{question}\n🧩 Варианты: {', '.join(options)}\n✅ Правильный: {correct}")
 
 
+# Команда /show_questions
 async def show_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not QUESTIONS:
         await update.message.reply_text("Список вопросов пуст.")
@@ -111,6 +123,7 @@ async def show_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(msg)
 
 
+# Команда /delete_question
 async def delete_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) != 1 or not context.args[0].isdigit():
         await update.message.reply_text("Используй: /delete_question <номер>")
@@ -119,11 +132,12 @@ async def delete_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     index = int(context.args[0]) - 1
     if 0 <= index < len(QUESTIONS):
         removed = QUESTIONS.pop(index)
-        await update.message.reply_text(f"Удалён вопрос: {removed['question']}")
+        await update.message.reply_text(f"🗑 Удалён вопрос: {removed['question']}")
     else:
-        await update.message.reply_text("Неверный номер вопроса.")
+        await update.message.reply_text("❌ Неверный номер вопроса.")
 
 
+# Главная функция
 async def main():
     app = ApplicationBuilder().token(os.getenv("TOKEN")).build()
 
@@ -144,6 +158,12 @@ async def main():
     await app.run_polling()
 
 
+# 🔧 Обработка запуска под Render
 if __name__ == "__main__":
     import asyncio
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+        loop.create_task(main())
+        loop.run_forever()
