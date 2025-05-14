@@ -1,3 +1,4 @@
+import os
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import (
     ApplicationBuilder,
@@ -8,27 +9,25 @@ from telegram.ext import (
     filters,
 )
 import logging
+import sqlite3
 
-# 🔐 Токен бота (не рекомендуется хранить в коде на проде, но для Render сойдёт)
+# 🔐 Токен бота
 TOKEN = "8080446742:AAHvpyBhyMqxsBNNz-fCt9pkPaj_Q1nHw1g"
+
+# Ваш Telegram ID
+AUTHORIZED_USER_ID = 5428660796
 
 # 🔧 Включаем логирование
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Подключение к базе данных SQLite
+def get_db_connection():
+    conn = sqlite3.connect('questions.db')
+    conn.row_factory = sqlite3.Row
+    return conn
+
 # 🎓 Константы
-QUESTIONS = [
-    {
-        "question": "Сколько будет 2 + 2?",
-        "options": ["3", "4", "5"],
-        "answer": "4"
-    },
-    {
-        "question": "Столица Франции?",
-        "options": ["Берлин", "Париж", "Мадрид"],
-        "answer": "Париж"
-    }
-]
 QUESTION = 0
 
 # 🟢 Старт
@@ -38,25 +37,27 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # 🧪 Начать тест
 async def test(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["score"] = 0
-    context.user_data["questions"] = QUESTIONS.copy()
     context.user_data["current_index"] = 0
-    context.user_data["question_count"] = len(QUESTIONS)
     await send_next_question(update, context)
     return QUESTION
 
 # 📩 Следующий вопрос
 async def send_next_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
     index = context.user_data["current_index"]
-    if index < len(context.user_data["questions"]):
-        q = context.user_data["questions"][index]
+    conn = get_db_connection()
+    questions = conn.execute('SELECT * FROM questions').fetchall()
+    conn.close()
+
+    if index < len(questions):
+        q = questions[index]
         reply_markup = ReplyKeyboardMarkup(
-            [[opt] for opt in q["options"]],
+            [[q['option1'], q['option2'], q['option3']]],
             one_time_keyboard=True,
             resize_keyboard=True
         )
-        await update.message.reply_text(q["question"], reply_markup=reply_markup)
+        await update.message.reply_text(q['question'], reply_markup=reply_markup)
     else:
-        total = context.user_data["question_count"]
+        total = len(questions)
         correct = context.user_data["score"]
         points = round((correct / total) * 10, 1)
         await update.message.reply_text(
@@ -69,8 +70,11 @@ async def send_next_question(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def handle_answer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     index = context.user_data["current_index"]
     user_answer = update.message.text.strip()
-    correct = context.user_data["questions"][index]["answer"]
+    conn = get_db_connection()
+    questions = conn.execute('SELECT * FROM questions').fetchall()
+    conn.close()
 
+    correct = questions[index]['answer']
     if user_answer == correct:
         context.user_data["score"] += 1
 
@@ -84,6 +88,10 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ➕ Добавление вопроса
 async def add_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != AUTHORIZED_USER_ID:
+        await update.message.reply_text("❌ У вас нет прав для добавления вопросов.")
+        return
+
     text = " ".join(context.args)
     parts = text.split("|")
 
@@ -101,11 +109,13 @@ async def add_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Правильный ответ должен быть одним из вариантов.")
         return
 
-    QUESTIONS.append({
-        "question": question,
-        "options": options,
-        "answer": correct
-    })
+    conn = get_db_connection()
+    conn.execute(
+        'INSERT INTO questions (question, option1, option2, option3, answer) VALUES (?, ?, ?, ?, ?)',
+        (question, options[0], options[1], options[2], correct)
+    )
+    conn.commit()
+    conn.close()
 
     await update.message.reply_text(
         f"✅ Вопрос добавлен:\n{question}\nВарианты: {', '.join(options)}\nПравильный: {correct}"
@@ -113,48 +123,44 @@ async def add_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # 📋 Показать все вопросы
 async def show_questions(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not QUESTIONS:
+    if update.message.from_user.id != AUTHORIZED_USER_ID:
+        await update.message.reply_text("❌ У вас нет прав для просмотра вопросов.")
+        return
+
+    conn = get_db_connection()
+    questions = conn.execute('SELECT * FROM questions').fetchall()
+    conn.close()
+
+    if not questions:
         await update.message.reply_text("Список вопросов пуст.")
     else:
         msg = ""
-        for i, q in enumerate(QUESTIONS, 1):
+        for i, q in enumerate(questions, 1):
             msg += f"{i}. {q['question']} — ✅ Ответ: {q['answer']}\n"
         await update.message.reply_text(msg)
 
 # 🗑 Удалить вопрос
 async def delete_question(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.from_user.id != AUTHORIZED_USER_ID:
+        await update.message.reply_text("❌ У вас нет прав для удаления вопросов.")
+        return
+
     if len(context.args) != 1 or not context.args[0].isdigit():
         await update.message.reply_text("Используй: /delete_question <номер>")
         return
 
     index = int(context.args[0]) - 1
-    if 0 <= index < len(QUESTIONS):
-        removed = QUESTIONS.pop(index)
+    conn = get_db_connection()
+    questions = conn.execute('SELECT * FROM questions').fetchall()
+
+    if 0 <= index < len(questions):
+        removed = questions[index]
+        conn.execute('DELETE FROM questions WHERE id = ?', (removed['id'],))
+        conn.commit()
+        conn.close()
         await update.message.reply_text(f"🗑 Удалён вопрос: {removed['question']}")
     else:
-        await update.message.reply_text("❌ Неверный номер вопроса.")
-
-# 🚀 Главная функция
-def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("test", test)],
-        states={
-            QUESTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, handle_answer)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("add_question", add_question))
-    app.add_handler(CommandHandler("show_questions", show_questions))
-    app.add_handler(CommandHandler("delete_question", delete_question))
-    app.add_handler(conv_handler)
-
-    app.run_polling()
-
-
-# 🧩 Запуск
-if __name__ == "__main__":
-    main()
+        conn.close()
+        await update.message.reply
+::contentReference[oaicite:25]{index=25}
+ 
